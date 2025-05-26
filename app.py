@@ -2,19 +2,24 @@ import os
 import tempfile
 import boto3
 import cv2
-import insightface
 import psycopg2
 import google.generativeai as genai
 from PIL import Image
 import io
-from insightface.app import FaceAnalysis
+import requests
+import numpy as np
+
 from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+load_dotenv('.env.local')
+
+import insightface
+from insightface.app import FaceAnalysis
 
 # Configure Gemini
 genai.configure(api_key=os.getenv('GOOGLE_API_KEY'))
+
 
 def check_image_content(image_path):
     """
@@ -114,6 +119,35 @@ def update_avatar_moderation(avatar_id, face_detection_result, image_content_res
     except Exception as e:
         raise Exception(f"Error updating avatar moderation: {str(e)}")
 
+def generate_presigned_url(img_path):
+    """
+    Generate a presigned URL for the S3 object
+    """
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
+            aws_session_token=os.getenv('AWS_SESSION_TOKEN'),
+            region_name=os.getenv('AWS_REGION', 'us-west-2')
+        )
+        
+        bucket_name = os.getenv('S3_BUCKET_NAME')
+        
+        # Generate presigned URL
+        presigned_url = s3_client.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={
+                'Bucket': bucket_name,
+                'Key': img_path
+            },
+            ExpiresIn=300  # URL expires in 5 minutes
+        )
+        
+        return presigned_url
+    except Exception as e:
+        raise Exception(f"Error generating presigned URL: {str(e)}")
+
 def download_from_s3(img_path):
     """
     Download an image from S3 bucket to a temporary file or use local file
@@ -131,23 +165,26 @@ def download_from_s3(img_path):
             shutil.copy2(img_path, temp_path)
             return temp_path
             
-        # Initialize S3 client
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
-            aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-            region_name=os.getenv('AWS_REGION', 'us-east-1')
-        )
+        # Generate presigned URL
+        presigned_url = generate_presigned_url(img_path)
+        print(f"Generated presigned URL for {img_path}")
         
-        # Get bucket name from environment variable
-        bucket_name = os.getenv('S3_BUCKET_NAME')
-        if not bucket_name:
-            raise ValueError("S3_BUCKET_NAME environment variable is not set")
+        # Download from presigned URL
+        try:
+            response = requests.get(presigned_url)
+            response.raise_for_status()
             
-        # Download the file from S3
-        s3_client.download_file(bucket_name, img_path, temp_path)
+            # Save the image to temp file
+            with open(temp_path, 'wb') as f:
+                f.write(response.content)
+                
+            print(f"Successfully downloaded to {temp_path}")
+            return temp_path
             
-        return temp_path
+        except Exception as download_error:
+            print(f"Error downloading file: {str(download_error)}")
+            raise
+            
     except Exception as e:
         raise Exception(f"Error downloading image: {str(e)}")
 
@@ -158,7 +195,9 @@ def handler(event, context):
     return {"statusCode": 200, "body": "Request successful!"}
 
 def detect_face(img_path, avatar_id, is_local=False):
-    app = FaceAnalysis(providers=["CPUExecutionProvider"])
+    # Initialize face analysis with default settings for 0.2.1
+
+    app = FaceAnalysis(providers=['CPUExecutionProvider'], root='/tmp/models')
     
     try:
         # Download the image from S3 to temp file or use local file
