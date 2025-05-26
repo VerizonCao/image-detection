@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env.local
+    ports:
+      - "9000:8080"  # Lambda function port
+    volumes:
+      - .:/var/task  # Mount current directory for development
+    environment:
+      - AWS_LAMBDA_FUNCTION_MEMORY_SIZE=1024
+      - AWS_LAMBDA_FUNCTION_TIMEOUT=30
+      - AWS_LAMBDA_FUNCTION_HANDLER=app.handler
+      - AWS_LAMBDA_FUNCTION_NAME=image-detection
+      - AWS_LAMBDA_FUNCTION_VERSION=1
+      - AWS_LAMBDA_RUNTIME_API=127.0.0.1:9000 
