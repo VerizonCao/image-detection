@@ -8,6 +8,7 @@ from PIL import Image
 import io
 import requests
 import numpy as np
+import json
 
 from dotenv import load_dotenv
 
@@ -39,7 +40,7 @@ def check_image_content(image_path):
         prompt = """
         Analyze this image and determine if it contains any of the following:
         1. Child sexual abuse material (CSAM)
-        2. Explicit nudity
+        2. Visible exposure of sensitive body parts, including genitals or nipples (e.g., full nudity or explicit close-ups)
         3. Non-consensual sexual content
         4. Extreme violence or gore
         
@@ -91,11 +92,18 @@ def update_avatar_moderation(avatar_id, face_detection_result, image_content_res
     Insert or update the moderation fields in avatar_moderation table
     """
     try:
+        print(f"Attempting to update database for avatar_id: {avatar_id}")
+        print(f"Face detection result: {face_detection_result}")
+        print(f"Image content result: {image_content_result}")
+        
         conn = get_db_connection()
+        print("Database connection established")
+        
         cur = conn.cursor()
         
         # Calculate check_pass based on both results
         check_pass = face_detection_result and image_content_result
+        print(f"Calculated check_pass: {check_pass}")
         
         # Insert if not exists, update if exists
         cur.execute(
@@ -111,12 +119,17 @@ def update_avatar_moderation(avatar_id, face_detection_result, image_content_res
             """,
             (avatar_id, face_detection_result, image_content_result, check_pass)
         )
+        print("SQL query executed successfully")
         
         conn.commit()
+        print("Database changes committed")
+        
         cur.close()
         conn.close()
+        print("Database connection closed")
         
     except Exception as e:
+        print(f"Database error details: {str(e)}")
         raise Exception(f"Error updating avatar moderation: {str(e)}")
 
 def generate_presigned_url(img_path):
@@ -189,14 +202,56 @@ def download_from_s3(img_path):
         raise Exception(f"Error downloading image: {str(e)}")
 
 def handler(event, context):
-    # Check if it's a local image (doesn't start with rita-avatars/)
-    is_local = not event["img_path"].startswith('rita-avatars/')
-    detect_face(event["img_path"], event["avatar_id"], is_local)
-    return {"statusCode": 200, "body": "Request successful!"}
+    try:
+        # Handle SQS event
+        if not event.get('Records'):
+            return {
+                "statusCode": 400,
+                "body": json.dumps({"error": "Invalid event format - no Records found"})
+            }
+            
+        # Process each record (though typically SQS triggers one message at a time)
+        for record in event['Records']:
+            try:
+                # Parse the message body
+                body = json.loads(record['body'])
+                
+                # Check if required fields are present
+                if not body.get('img_path'):
+                    print("Missing required field: img_path")
+                    continue
+                    
+                if not body.get('avatar_id'):
+                    print("Missing required field: avatar_id")
+                    continue
+                    
+                # Check if it's a local image (doesn't start with rita-avatars/)
+                is_local = not body["img_path"].startswith('rita-avatars/')
+                print(f"the img_path is {body['img_path']}, is_local: {is_local}")
+                detect_face(body["img_path"], body["avatar_id"], is_local)
+                
+            except json.JSONDecodeError as e:
+                print(f"Error decoding message body: {str(e)}")
+                continue
+            except Exception as e:
+                print(f"Error processing record: {str(e)}")
+                continue
+        
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "Processing completed"})
+        }
+        
+    except Exception as e:
+        print(f"Error in handler: {str(e)}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
+        }
 
 def detect_face(img_path, avatar_id, is_local=False):
     # Initialize face analysis with default settings for 0.2.1
-
+    print(f"Starting face detection for avatar_id: {avatar_id}")
     app = FaceAnalysis(providers=['CPUExecutionProvider'], root='/tmp/models')
     
     try:
@@ -223,10 +278,13 @@ def detect_face(img_path, avatar_id, is_local=False):
             print(f"{faces[0].det_score:.4f}")
             
         # Check image content using Gemini
+        print("Starting image content check")
         image_content_result = check_image_content(temp_img_path)
+        print(f"Image content check result: {image_content_result}")
             
         # Only update database if it's not a local image
         if not is_local:
+            print("Updating database for non-local image")
             update_avatar_moderation(avatar_id, face_detection_result, image_content_result)
         else:
             print("Local image detected - skipping database update")
@@ -235,6 +293,8 @@ def detect_face(img_path, avatar_id, is_local=False):
             
         # Clean up the temporary file
         os.unlink(temp_img_path)
+        print("Temporary file cleaned up")
         
     except Exception as e:
+        print(f"Error in face detection: {str(e)}")
         raise Exception(f"Error in face detection: {str(e)}")
