@@ -214,17 +214,112 @@ def send_discord_webhook(avatar_id, face_detection_pass, image_content_pass, che
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
 
-def update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path=None, user_want_public=False):
+def get_old_moderation_result(avatar_id):
+    """
+    Get the old moderation result for an avatar from the database
+    Returns a tuple of (face_detection_pass, image_content_pass, check_pass) or None if no record exists
+    """
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        cur.execute(
+            """
+            SELECT face_detection_pass, image_content_pass, check_pass
+            FROM avatar_moderation
+            WHERE avatar_id = %s
+            """,
+            (avatar_id,)
+        )
+        
+        result = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if result:
+            print(f"Old moderation result found: face_detection_pass={result[0]}, image_content_pass={result[1]}, check_pass={result[2]}")
+            return result
+        else:
+            print("No old moderation result found for this avatar")
+            return None
+            
+    except Exception as e:
+        print(f"Error getting old moderation result: {str(e)}")
+        return None
+
+def create_user_message(user_id, avatar_id, check_pass, is_new_record=False, old_check_pass=None):
+    """
+    Create a message for the user about the avatar moderation result
+    """
+    try:
+        if not user_id:
+            print("No user_id provided, skipping message creation")
+            return
+            
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Generate message content based on the result
+        if is_new_record:
+            if check_pass:
+                msg_content = f"🎉 Great news! Your character (Avatar ID: {avatar_id}) has passed moderation and is now available for use."
+            else:
+                msg_content = f"❌ Your character (Avatar ID: {avatar_id}) did not pass moderation. Please review the guidelines and try again."
+        else:
+            # This is an update to an existing record
+            if old_check_pass is None:
+                # This shouldn't happen, but handle it gracefully
+                if check_pass:
+                    msg_content = f"🎉 Your character (Avatar ID: {avatar_id}) has passed moderation and is now available for use."
+                else:
+                    msg_content = f"❌ Your character (Avatar ID: {avatar_id}) did not pass moderation. Please review the guidelines and try again."
+            elif old_check_pass != check_pass:
+                if check_pass:
+                    msg_content = f"🎉 Great news! Your character (Avatar ID: {avatar_id}) has been re-evaluated and now passes moderation."
+                else:
+                    msg_content = f"⚠️ Your character (Avatar ID: {avatar_id}) has been re-evaluated and no longer passes moderation. Please review the guidelines."
+            else:
+                # No change in status, don't create a message
+                print("No change in moderation status, skipping message creation")
+                cur.close()
+                conn.close()
+                return
+        
+        # Insert the message
+        cur.execute(
+            """
+            INSERT INTO msg (user_id, msg_content)
+            VALUES (%s, %s)
+            """,
+            (user_id, msg_content)
+        )
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        print(f"Message created for user {user_id}: {msg_content}")
+        
+    except Exception as e:
+        print(f"Error creating user message: {str(e)}")
+
+def update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path=None, user_want_public=False, user_id=None):
     """
     Insert or update the moderation fields in avatar_moderation table
     Also update the is_public field in avatars table if check passes and user_want_public is True
     """
     try:
         print(f"Attempting to update database for avatar_id: {avatar_id}")
+        print(f"User ID: {user_id}")
         print(f"Face detection result: {face_detection_result}")
         print(f"Image content result: {image_content_result}")
         print(f"User want public: {user_want_public}")
         print(f"Webhook parameters - temp_img_path: {temp_img_path}")
+        
+        # Get old moderation result before updating
+        old_result = get_old_moderation_result(avatar_id)
+        is_new_record = old_result is None
+        old_check_pass = old_result[2] if old_result else None
         
         conn = get_db_connection()
         print("Database connection established")
@@ -274,6 +369,10 @@ def update_avatar_moderation(avatar_id, face_detection_result, image_content_res
         cur.close()
         conn.close()
         print("Database connection closed")
+
+        # Create user message if result changed or is new
+        if user_id:
+            create_user_message(user_id, avatar_id, check_pass, is_new_record, old_check_pass)
 
         # Send Discord webhook if temp_img_path is provided
         if temp_img_path:
@@ -380,6 +479,10 @@ def handler(event, context):
                     print("Missing required field: avatar_id")
                     continue
                 
+                # Get user_id field, default to None if not present
+                user_id = body.get('user_id')
+                print(f"user_id: {user_id}")
+                
                 # Get user_want_public field, default to False if not present
                 user_want_public = body.get('user_want_public', False)
                 print(f"user_want_public: {user_want_public}")
@@ -393,7 +496,7 @@ def handler(event, context):
                 if temp_img_path is None:
                     raise ValueError("Failed to download image")
                 
-                detect_face(body["img_path"], body["avatar_id"], is_local, temp_img_path, user_want_public)
+                detect_face(body["img_path"], body["avatar_id"], is_local, temp_img_path, user_want_public, user_id)
                 
             except json.JSONDecodeError as e:
                 print(f"Error decoding message body: {str(e)}")
@@ -423,7 +526,7 @@ def handler(event, context):
             "body": json.dumps({"error": str(e)})
         }
 
-def detect_face(img_path, avatar_id, is_local=False, temp_img_path=None, user_want_public=False):
+def detect_face(img_path, avatar_id, is_local=False, temp_img_path=None, user_want_public=False, user_id=None):
     # Initialize face analysis with default settings for 0.2.1
     print(f"Starting face detection for avatar_id: {avatar_id}")
     app = FaceAnalysis(providers=['CPUExecutionProvider'], root='/tmp/models')
@@ -456,7 +559,7 @@ def detect_face(img_path, avatar_id, is_local=False, temp_img_path=None, user_wa
         # Only update database if it's not a local image
         if not is_local:
             print("Updating database for non-local image")
-            update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path, user_want_public)
+            update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path, user_want_public, user_id)
         else:
             print("Local image detected - skipping database update")
             print(f"Face detection result: {face_detection_result}")
