@@ -19,12 +19,15 @@ load_dotenv('.env.local')
 import insightface
 from insightface.app import FaceAnalysis
 
-# Configure OpenAI
-client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+# Configure OpenAI client for OpenRouter
+client = OpenAI(
+    base_url="https://openrouter.ai/api/v1",
+    api_key=os.getenv('OPENROUTER_API_KEY'),
+)
 
 def check_image_content_openai(image_path):
     """
-    Use GPT-4 Vision to check if the image content is appropriate
+    Use Llama Guard via OpenRouter to check if the image content is appropriate
     Returns True if the image is appropriate, False otherwise
     """
     try:
@@ -33,62 +36,98 @@ def check_image_content_openai(image_path):
             image_bytes = f.read()
             img_b64 = base64.b64encode(image_bytes).decode()
 
-        # Create the prompt
+        # Create the prompt for Llama Guard
         prompt = """
-        Analyze this image and determine if it contains any of the following:
-        1. Child sexual abuse material (CSAM)
-        2. Visible exposure of extremely sensitive body parts, including genitals or nipples (e.g., full nudity or explicit close-ups)
-        3. Extreme violence or gore
-        
-        Note: Proper sexual content is allowed.
-        
-        Respond with ONLY 'PASS' if the image is appropriate, or 'FAIL' if it contains any of the above.
+        Mark the images you received as
+        safe, risky, unsafe
+        Where unsafe is when the images 
+        first: contains fully exposed private parts like nipples and genetals, with any sex or age
+        or: extremely bloody or might be harmful
+        or : contains suicide implication
+        Risky is like when the content contains strong setual implications, like in lingerie, so we need to issue NSFW warning.
+        Safe is everything else
         """
 
-        try:
-            # Generate content using GPT-4 Vision
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{img_b64}"
+        def run_single_check():
+            """Run a single image content check"""
+            try:
+                # Generate content using Llama Guard via OpenRouter
+                response = client.chat.completions.create(
+                    extra_headers={
+                        "HTTP-Referer": "https://your-site.com",  # Optional. Update with your site URL
+                        "X-Title": "Image Detection Service",  # Optional. Update with your site name
+                    },
+                    model="meta-llama/llama-guard-4-12b",
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{img_b64}"
+                                    }
                                 }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=500
-            )
-            
-            # Log detailed response information
-            print("OpenAI API Response Details:")
-            print(f"- Response object type: {type(response)}")
-            
-            # Get the response text
-            result = response.choices[0].message.content.strip().upper()
-            print(f"OpenAI API Result: {result}")
-            
-            return result == 'PASS'
-            
-        except Exception as openai_error:
-            # Log the specific error for debugging
-            error_str = str(openai_error).lower()
-            print(f"OpenAI API error details: {error_str}")
-            print(f"Error type: {type(openai_error)}")
-            
-            # If the error contains content policy or safety-related terms, treat as FAIL
-            if any(term in error_str for term in ['content', 'policy', 'safety']):
-                print("Content blocked by safety filters - treating as FAIL")
-                return False
+                            ]
+                        }
+                    ],
+                    max_tokens=500
+                )
                 
-            # For other errors, raise the exception to be handled by the outer try-catch
-            raise
+                # Get the response text
+                result = response.choices[0].message.content.strip().lower()
+                print(f"OpenRouter API Result: {result}")
+                
+                # Handle the three-tier classification system
+                # Both safe and risky are considered passing (True)
+                # Only unsafe is considered failing (False)
+                if result == 'safe':
+                    print(f"Content analysis result: Safe - Content is appropriate")
+                    return True
+                elif result == 'risky':
+                    print(f"Content analysis result: Risky - NSFW warning needed but content passes")
+                    return True  # Risky content still passes the check
+                elif result == 'unsafe':
+                    print(f"Content analysis result: Unsafe - Content should be blocked")
+                    return False
+                else:
+                    print(f"Content analysis result: Unknown response '{result}' - treating as unsafe")
+                    return False
+                    
+            except Exception as openrouter_error:
+                # Log the specific error for debugging
+                error_str = str(openrouter_error).lower()
+                print(f"OpenRouter API error details: {error_str}")
+                print(f"Error type: {type(openrouter_error)}")
+                
+                # If the error contains content policy or safety-related terms, treat as FAIL
+                if any(term in error_str for term in ['content', 'policy', 'safety']):
+                    print("Content blocked by safety filters - treating as FAIL")
+                    return False
+                    
+                # For other errors, raise the exception to be handled by the outer try-catch
+                raise
+
+        # Run the first check
+        print("Running first image content check...")
+        first_result = run_single_check()
+        
+        # If first result is unsafe, run a second check
+        if not first_result:
+            print("First check returned unsafe - running second check for confirmation...")
+            second_result = run_single_check()
+            
+            # Only fail if both checks return unsafe
+            if not second_result:
+                print("Both checks returned unsafe - final result: FAILED")
+                return False
+            else:
+                print("Second check passed - final result: PASSED")
+                return True
+        else:
+            print("First check passed - final result: PASSED")
+            return first_result
         
     except Exception as e:
         # For any other errors (like file reading issues), raise the exception
