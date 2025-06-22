@@ -214,14 +214,16 @@ def send_discord_webhook(avatar_id, face_detection_pass, image_content_pass, che
         import traceback
         print(f"Traceback: {traceback.format_exc()}")
 
-def update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path=None):
+def update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path=None, user_want_public=False):
     """
     Insert or update the moderation fields in avatar_moderation table
+    Also update the is_public field in avatars table if check passes and user_want_public is True
     """
     try:
         print(f"Attempting to update database for avatar_id: {avatar_id}")
         print(f"Face detection result: {face_detection_result}")
         print(f"Image content result: {image_content_result}")
+        print(f"User want public: {user_want_public}")
         print(f"Webhook parameters - temp_img_path: {temp_img_path}")
         
         conn = get_db_connection()
@@ -247,7 +249,24 @@ def update_avatar_moderation(avatar_id, face_detection_result, image_content_res
             """,
             (avatar_id, face_detection_result, image_content_result, check_pass)
         )
-        print("SQL query executed successfully")
+        print("Avatar moderation table updated successfully")
+        
+        # Update is_public field in avatars table if check passes and user_want_public is True
+        if check_pass and user_want_public:
+            print("Check passed and user wants public - updating is_public field in avatars table")
+            cur.execute(
+                """
+                UPDATE avatars 
+                SET is_public = TRUE 
+                WHERE avatar_id = %s
+                """,
+                (avatar_id,)
+            )
+            print("Avatars table is_public field updated successfully")
+        elif not check_pass:
+            print("Check failed - not updating is_public field")
+        elif not user_want_public:
+            print("User doesn't want public - not updating is_public field")
         
         conn.commit()
         print("Database changes committed")
@@ -360,6 +379,10 @@ def handler(event, context):
                 if not body.get('avatar_id'):
                     print("Missing required field: avatar_id")
                     continue
+                
+                # Get user_want_public field, default to False if not present
+                user_want_public = body.get('user_want_public', False)
+                print(f"user_want_public: {user_want_public}")
                     
                 # Check if it's a local image (doesn't start with rita-avatars/)
                 is_local = not body["img_path"].startswith('rita-avatars/')
@@ -370,7 +393,7 @@ def handler(event, context):
                 if temp_img_path is None:
                     raise ValueError("Failed to download image")
                 
-                detect_face(body["img_path"], body["avatar_id"], is_local, temp_img_path)
+                detect_face(body["img_path"], body["avatar_id"], is_local, temp_img_path, user_want_public)
                 
             except json.JSONDecodeError as e:
                 print(f"Error decoding message body: {str(e)}")
@@ -400,7 +423,7 @@ def handler(event, context):
             "body": json.dumps({"error": str(e)})
         }
 
-def detect_face(img_path, avatar_id, is_local=False, temp_img_path=None):
+def detect_face(img_path, avatar_id, is_local=False, temp_img_path=None, user_want_public=False):
     # Initialize face analysis with default settings for 0.2.1
     print(f"Starting face detection for avatar_id: {avatar_id}")
     app = FaceAnalysis(providers=['CPUExecutionProvider'], root='/tmp/models')
@@ -433,7 +456,7 @@ def detect_face(img_path, avatar_id, is_local=False, temp_img_path=None):
         # Only update database if it's not a local image
         if not is_local:
             print("Updating database for non-local image")
-            update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path)
+            update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path, user_want_public)
         else:
             print("Local image detected - skipping database update")
             print(f"Face detection result: {face_detection_result}")
