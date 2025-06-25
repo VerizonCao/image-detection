@@ -249,59 +249,59 @@ def get_old_moderation_result(avatar_id):
 
 def create_user_message(user_id, avatar_id, check_pass, is_new_record=False, old_check_pass=None):
     """
-    Create a message for the user about the avatar moderation result
+    Create a notification for the user about the avatar moderation result
     """
     try:
         if not user_id:
-            print("No user_id provided, skipping message creation")
+            print("No user_id provided, skipping notification creation")
             return
             
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # Generate message content based on the result
+        # Generate notification content based on the result
         if is_new_record:
             if check_pass:
-                msg_content = f"🎉 Great news! Your character (Avatar ID: {avatar_id}) has passed moderation and is now available for use."
+                content = f"🎉 Great news! Your character (Avatar ID: {avatar_id}) has passed moderation and is now available for use."
             else:
-                msg_content = f"❌ Your character (Avatar ID: {avatar_id}) did not pass moderation. Please review the guidelines and try again."
+                content = f"❌ Your character (Avatar ID: {avatar_id}) did not pass moderation. Please review the guidelines and try again."
         else:
             # This is an update to an existing record
             if old_check_pass is None:
                 # This shouldn't happen, but handle it gracefully
                 if check_pass:
-                    msg_content = f"🎉 Your character (Avatar ID: {avatar_id}) has passed moderation and is now available for use."
+                    content = f"🎉 Your character (Avatar ID: {avatar_id}) has passed moderation and is now available for use."
                 else:
-                    msg_content = f"❌ Your character (Avatar ID: {avatar_id}) did not pass moderation. Please review the guidelines and try again."
+                    content = f"❌ Your character (Avatar ID: {avatar_id}) did not pass moderation. Please review the guidelines and try again."
             elif old_check_pass != check_pass:
                 if check_pass:
-                    msg_content = f"🎉 Great news! Your character (Avatar ID: {avatar_id}) has been re-evaluated and now passes moderation."
+                    content = f"🎉 Great news! Your character (Avatar ID: {avatar_id}) has been re-evaluated and now passes moderation."
                 else:
-                    msg_content = f"⚠️ Your character (Avatar ID: {avatar_id}) has been re-evaluated and no longer passes moderation. Please review the guidelines."
+                    content = f"⚠️ Your character (Avatar ID: {avatar_id}) has been re-evaluated and no longer passes moderation. Please review the guidelines."
             else:
-                # No change in status, don't create a message
-                print("No change in moderation status, skipping message creation")
+                # No change in status, don't create a notification
+                print("No change in moderation status, skipping notification creation")
                 cur.close()
                 conn.close()
                 return
         
-        # Insert the message
+        # Insert the notification
         cur.execute(
             """
-            INSERT INTO msg (user_id, msg_content)
+            INSERT INTO notifications (user_id, content)
             VALUES (%s, %s)
             """,
-            (user_id, msg_content)
+            (user_id, content)
         )
         
         conn.commit()
         cur.close()
         conn.close()
         
-        print(f"Message created for user {user_id}: {msg_content}")
+        print(f"Notification created for user {user_id}: {content}")
         
     except Exception as e:
-        print(f"Error creating user message: {str(e)}")
+        print(f"Error creating user notification: {str(e)}")
 
 def update_avatar_moderation(avatar_id, face_detection_result, image_content_result, temp_img_path=None, user_want_public=False, user_id=None):
     """
